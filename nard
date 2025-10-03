@@ -1,0 +1,661 @@
+#!/usr/bin/perl -w
+
+#  NARD -- Not A Real Disassembler
+#  PD 2025 Julie Kirsty Louise Montoya
+
+use strict;
+use Getopt::Std;
+use Data::Dumper;
+use constant { TRUE => "1", FALSE => "",
+               HIT_EOF => 0, CLEAN_END => "1", DIRTY_END => "2" };
+use JSON;
+
+$| = TRUE;
+
+my %OPTIONS;
+getopts "A:La:de:g:i:j:l:o:v", \%OPTIONS;
+
+my $VERBOSE     = $OPTIONS{"v"};
+my $IN_FILE     = $OPTIONS{"i"};
+my $JSON_FILE   = $OPTIONS{"j"};
+my $OUT_FILE    = $OPTIONS{"o"};
+my $ASM_FILE    = $OPTIONS{"a"};
+my $ASM_SAVE    = $OPTIONS{"A"};
+my $LOAD_ADDR   = $OPTIONS{"l"} || 0x0e00;
+$LOAD_ADDR =~ s/(0x|&)(\S+)/hex $2/ei;
+my $EXEC_ADDR   = $OPTIONS{"e"} || $LOAD_ADDR;
+$EXEC_ADDR =~ s/(0x|&)(\S+)/hex $2/ei;
+my $GAP         = $OPTIONS{"g"};
+my $DUMP        = $OPTIONS{"d"};
+my $NO_LABELS   = $OPTIONS{"L"};
+my $JSON = new JSON;
+
+my ($data, @gap, %gap, @mem, @chunk, $ptr, $first_free, $chunk_start, $mnemonic,
+    $mode, $more, $pattern, $sep, $dis, @dis, @new_dis, @new_dis2,  @not_code,
+    $fb_mnem);
+
+my %INSTR = ( 0 => { "mnem" => "BRK", "mode" => "impl", "more" => 0, "pattern" => "" },
+              1 => { "mnem" => "ORA", "mode" => "X,ind", "more" => 1, "pattern" => "(%s, X)" },
+              5 => { "mnem" => "ORA", "mode" => "zpg", "more" => 1, "pattern" => "%s" },
+              6 => { "mnem" => "ASL", "mode" => "zpg", "more" => 1, "pattern" => "%s" },
+              8 => { "mnem" => "PHP", "mode" => "impl", "more" => 0, "pattern" => "" },
+              9 => { "mnem" => "ORA", "mode" => "#", "more" => 1, "pattern" => "#%s" },
+             10 => { "mnem" => "ASL", "mode" => "A", "more" => 0, "pattern" => "A" },
+             13 => { "mnem" => "ORA", "mode" => "abs", "more" => 2, "pattern" => "%s" },
+             14 => { "mnem" => "ASL", "mode" => "abs", "more" => 2, "pattern" => "%s" },
+             16 => { "mnem" => "BPL", "mode" => "rel", "more" => 1, "pattern" => "%s" },
+             17 => { "mnem" => "ORA", "mode" => "ind,Y", "more" => 1, "pattern" => "(%s), Y" },
+             21 => { "mnem" => "ORA", "mode" => "zpg,X", "more" => 1, "pattern" => "%s, X" },
+             22 => { "mnem" => "ASL", "mode" => "zpg,X", "more" => 1, "pattern" => "%s, X" },
+             24 => { "mnem" => "CLC", "mode" => "impl", "more" => 0, "pattern" => "" },
+             25 => { "mnem" => "ORA", "mode" => "abs,Y", "more" => 2, "pattern" => "%s, Y" },
+             29 => { "mnem" => "ORA", "mode" => "abs,X", "more" => 2, "pattern" => "%s, X" },
+             30 => { "mnem" => "ASL", "mode" => "abs,X", "more" => 2, "pattern" => "%s, X" },
+             32 => { "mnem" => "JSR", "mode" => "abs", "more" => 2, "pattern" => "%s" },
+             33 => { "mnem" => "AND", "mode" => "X,ind", "more" => 1, "pattern" => "(%s, X)" },
+             36 => { "mnem" => "BIT", "mode" => "zpg", "more" => 1, "pattern" => "%s" },
+             37 => { "mnem" => "AND", "mode" => "zpg", "more" => 1, "pattern" => "%s" },
+             38 => { "mnem" => "ROL", "mode" => "zpg", "more" => 1, "pattern" => "%s" },
+             40 => { "mnem" => "PLP", "mode" => "impl", "more" => 0, "pattern" => "" },
+             41 => { "mnem" => "AND", "mode" => "#", "more" => 1, "pattern" => "#%s" },
+             42 => { "mnem" => "ROL", "mode" => "A", "more" => 0, "pattern" => "A" },
+             44 => { "mnem" => "BIT", "mode" => "abs", "more" => 2, "pattern" => "%s" },
+             45 => { "mnem" => "AND", "mode" => "abs", "more" => 2, "pattern" => "%s" },
+             46 => { "mnem" => "ROL", "mode" => "abs", "more" => 2, "pattern" => "%s" },
+             48 => { "mnem" => "BMI", "mode" => "rel", "more" => 1, "pattern" => "%s" },
+             49 => { "mnem" => "AND", "mode" => "ind,Y", "more" => 1, "pattern" => "(%s), Y" },
+             53 => { "mnem" => "AND", "mode" => "zpg,X", "more" => 1, "pattern" => "%s, X" },
+             54 => { "mnem" => "ROL", "mode" => "zpg,X", "more" => 1, "pattern" => "%s, X" },
+             56 => { "mnem" => "SEC", "mode" => "impl", "more" => 0, "pattern" => "" },
+             57 => { "mnem" => "AND", "mode" => "abs,Y", "more" => 2, "pattern" => "%s, Y" },
+             61 => { "mnem" => "AND", "mode" => "abs,X", "more" => 2, "pattern" => "%s, X" },
+             62 => { "mnem" => "ROL", "mode" => "abs,X", "more" => 2, "pattern" => "%s, X" },
+             64 => { "mnem" => "RTI", "mode" => "impl", "more" => 0, "pattern" => "" },
+             65 => { "mnem" => "EOR", "mode" => "X,ind", "more" => 1, "pattern" => "(%s, X)" },
+             69 => { "mnem" => "EOR", "mode" => "zpg", "more" => 1, "pattern" => "%s" },
+             70 => { "mnem" => "LSR", "mode" => "zpg", "more" => 1, "pattern" => "%s" },
+             72 => { "mnem" => "PHA", "mode" => "impl", "more" => 0, "pattern" => "" },
+             73 => { "mnem" => "EOR", "mode" => "#", "more" => 1, "pattern" => "#%s" },
+             74 => { "mnem" => "LSR", "mode" => "A", "more" => 0, "pattern" => "A" },
+             76 => { "mnem" => "JMP", "mode" => "abs", "more" => 2, "pattern" => "%s" },
+             77 => { "mnem" => "EOR", "mode" => "abs", "more" => 2, "pattern" => "%s" },
+             78 => { "mnem" => "LSR", "mode" => "abs", "more" => 2, "pattern" => "%s" },
+             80 => { "mnem" => "BVC", "mode" => "rel", "more" => 1, "pattern" => "%s" },
+             81 => { "mnem" => "EOR", "mode" => "ind,Y", "more" => 1, "pattern" => "(%s), Y" },
+             85 => { "mnem" => "EOR", "mode" => "zpg,X", "more" => 1, "pattern" => "%s, X" },
+             86 => { "mnem" => "LSR", "mode" => "zpg,X", "more" => 1, "pattern" => "%s, X" },
+             88 => { "mnem" => "CLI", "mode" => "impl", "more" => 0, "pattern" => "" },
+             89 => { "mnem" => "EOR", "mode" => "abs,Y", "more" => 2, "pattern" => "%s, Y" },
+             93 => { "mnem" => "EOR", "mode" => "abs,X", "more" => 2, "pattern" => "%s, X" },
+             94 => { "mnem" => "LSR", "mode" => "abs,X", "more" => 2, "pattern" => "%s, X" },
+             96 => { "mnem" => "RTS", "mode" => "impl", "more" => 0, "pattern" => "" },
+             97 => { "mnem" => "ADC", "mode" => "X,ind", "more" => 1, "pattern" => "(%s, X)" },
+            101 => { "mnem" => "ADC", "mode" => "zpg", "more" => 1, "pattern" => "%s" },
+            102 => { "mnem" => "ROR", "mode" => "zpg", "more" => 1, "pattern" => "%s" },
+            104 => { "mnem" => "PLA", "mode" => "impl", "more" => 0, "pattern" => "" },
+            105 => { "mnem" => "ADC", "mode" => "#", "more" => 1, "pattern" => "#%s" },
+            106 => { "mnem" => "ROR", "mode" => "A", "more" => 0, "pattern" => "A" },
+            108 => { "mnem" => "JMP", "mode" => "ind", "more" => 2, "pattern" => "(%s)" },
+            109 => { "mnem" => "ADC", "mode" => "abs", "more" => 2, "pattern" => "%s" },
+            110 => { "mnem" => "ROR", "mode" => "abs", "more" => 2, "pattern" => "%s" },
+            112 => { "mnem" => "BVS", "mode" => "rel", "more" => 1, "pattern" => "%s" },
+            113 => { "mnem" => "ADC", "mode" => "ind,Y", "more" => 1, "pattern" => "(%s), Y" },
+            117 => { "mnem" => "ADC", "mode" => "zpg,X", "more" => 1, "pattern" => "%s, X" },
+            118 => { "mnem" => "ROR", "mode" => "zpg,X", "more" => 1, "pattern" => "%s, X" },
+            120 => { "mnem" => "SEI", "mode" => "impl", "more" => 0, "pattern" => "" },
+            121 => { "mnem" => "ADC", "mode" => "abs,Y", "more" => 2, "pattern" => "%s, Y" },
+            125 => { "mnem" => "ADC", "mode" => "abs,X", "more" => 2, "pattern" => "%s, X" },
+            126 => { "mnem" => "ROR", "mode" => "abs,X", "more" => 2, "pattern" => "%s, X" },
+            129 => { "mnem" => "STA", "mode" => "X,ind", "more" => 1, "pattern" => "(%s, X)" },
+            132 => { "mnem" => "STY", "mode" => "zpg", "more" => 1, "pattern" => "%s" },
+            133 => { "mnem" => "STA", "mode" => "zpg", "more" => 1, "pattern" => "%s" },
+            134 => { "mnem" => "STX", "mode" => "zpg", "more" => 1, "pattern" => "%s" },
+            136 => { "mnem" => "DEY", "mode" => "impl", "more" => 0, "pattern" => "" },
+            138 => { "mnem" => "TXA", "mode" => "impl", "more" => 0, "pattern" => "" },
+            140 => { "mnem" => "STY", "mode" => "abs", "more" => 2, "pattern" => "%s" },
+            141 => { "mnem" => "STA", "mode" => "abs", "more" => 2, "pattern" => "%s" },
+            142 => { "mnem" => "STX", "mode" => "abs", "more" => 2, "pattern" => "%s" },
+            144 => { "mnem" => "BCC", "mode" => "rel", "more" => 1, "pattern" => "%s" },
+            145 => { "mnem" => "STA", "mode" => "ind,Y", "more" => 1, "pattern" => "(%s), Y" },
+            148 => { "mnem" => "STY", "mode" => "zpg,X", "more" => 1, "pattern" => "%s, X" },
+            149 => { "mnem" => "STA", "mode" => "zpg,X", "more" => 1, "pattern" => "%s, X" },
+            150 => { "mnem" => "STX", "mode" => "zpg,Y", "more" => 1, "pattern" => "%s, Y" },
+            152 => { "mnem" => "TYA", "mode" => "impl", "more" => 0, "pattern" => "" },
+            153 => { "mnem" => "STA", "mode" => "abs,Y", "more" => 2, "pattern" => "%s, Y" },
+            154 => { "mnem" => "TXS", "mode" => "impl", "more" => 0, "pattern" => "" },
+            157 => { "mnem" => "STA", "mode" => "abs,X", "more" => 2, "pattern" => "%s, X" },
+            160 => { "mnem" => "LDY", "mode" => "#", "more" => 1, "pattern" => "#%s" },
+            161 => { "mnem" => "LDA", "mode" => "X,ind", "more" => 1, "pattern" => "(%s, X)" },
+            162 => { "mnem" => "LDX", "mode" => "#", "more" => 1, "pattern" => "#%s" },
+            164 => { "mnem" => "LDY", "mode" => "zpg", "more" => 1, "pattern" => "%s" },
+            165 => { "mnem" => "LDA", "mode" => "zpg", "more" => 1, "pattern" => "%s" },
+            166 => { "mnem" => "LDX", "mode" => "zpg", "more" => 1, "pattern" => "%s" },
+            168 => { "mnem" => "TAY", "mode" => "impl", "more" => 0, "pattern" => "" },
+            169 => { "mnem" => "LDA", "mode" => "#", "more" => 1, "pattern" => "#%s" },
+            170 => { "mnem" => "TAX", "mode" => "impl", "more" => 0, "pattern" => "" },
+            172 => { "mnem" => "LDY", "mode" => "abs", "more" => 2, "pattern" => "%s" },
+            173 => { "mnem" => "LDA", "mode" => "abs", "more" => 2, "pattern" => "%s" },
+            174 => { "mnem" => "LDX", "mode" => "abs", "more" => 2, "pattern" => "%s" },
+            176 => { "mnem" => "BCS", "mode" => "rel", "more" => 1, "pattern" => "%s" },
+            177 => { "mnem" => "LDA", "mode" => "ind,Y", "more" => 1, "pattern" => "(%s), Y" },
+            180 => { "mnem" => "LDY", "mode" => "zpg,X", "more" => 1, "pattern" => "%s, X" },
+            181 => { "mnem" => "LDA", "mode" => "zpg,X", "more" => 1, "pattern" => "%s, X" },
+            182 => { "mnem" => "LDX", "mode" => "zpg,Y", "more" => 1, "pattern" => "%s, Y" },
+            184 => { "mnem" => "CLV", "mode" => "impl", "more" => 0, "pattern" => "" },
+            185 => { "mnem" => "LDA", "mode" => "abs,Y", "more" => 2, "pattern" => "%s, Y" },
+            186 => { "mnem" => "TSX", "mode" => "impl", "more" => 0, "pattern" => "" },
+            188 => { "mnem" => "LDY", "mode" => "abs,X", "more" => 2, "pattern" => "%s, X" },
+            189 => { "mnem" => "LDA", "mode" => "abs,X", "more" => 2, "pattern" => "%s, X" },
+            190 => { "mnem" => "LDX", "mode" => "abs,Y", "more" => 2, "pattern" => "%s, Y" },
+            192 => { "mnem" => "CPY", "mode" => "#", "more" => 1, "pattern" => "#%s" },
+            193 => { "mnem" => "CMP", "mode" => "X,ind", "more" => 1, "pattern" => "(%s, X)" },
+            196 => { "mnem" => "CPY", "mode" => "zpg", "more" => 1, "pattern" => "%s" },
+            197 => { "mnem" => "CMP", "mode" => "zpg", "more" => 1, "pattern" => "%s" },
+            198 => { "mnem" => "DEC", "mode" => "zpg", "more" => 1, "pattern" => "%s" },
+            200 => { "mnem" => "INY", "mode" => "impl", "more" => 0, "pattern" => "" },
+            201 => { "mnem" => "CMP", "mode" => "#", "more" => 1, "pattern" => "#%s" },
+            202 => { "mnem" => "DEX", "mode" => "impl", "more" => 0, "pattern" => "" },
+            204 => { "mnem" => "CPY", "mode" => "abs", "more" => 2, "pattern" => "%s" },
+            205 => { "mnem" => "CMP", "mode" => "abs", "more" => 2, "pattern" => "%s" },
+            206 => { "mnem" => "DEC", "mode" => "abs", "more" => 2, "pattern" => "%s" },
+            208 => { "mnem" => "BNE", "mode" => "rel", "more" => 1, "pattern" => "%s" },
+            209 => { "mnem" => "CMP", "mode" => "ind,Y", "more" => 1, "pattern" => "(%s), Y" },
+            213 => { "mnem" => "CMP", "mode" => "zpg,X", "more" => 1, "pattern" => "%s, X" },
+            214 => { "mnem" => "DEC", "mode" => "zpg,X", "more" => 1, "pattern" => "%s, X" },
+            216 => { "mnem" => "CLD", "mode" => "impl", "more" => 0, "pattern" => "" },
+            217 => { "mnem" => "CMP", "mode" => "abs,Y", "more" => 2, "pattern" => "%s, Y" },
+            221 => { "mnem" => "CMP", "mode" => "abs,X", "more" => 2, "pattern" => "%s, X" },
+            222 => { "mnem" => "DEC", "mode" => "abs,X", "more" => 2, "pattern" => "%s, X" },
+            224 => { "mnem" => "CPX", "mode" => "#", "more" => 1, "pattern" => "#%s" },
+            225 => { "mnem" => "SBC", "mode" => "X,ind", "more" => 1, "pattern" => "(%s, X)" },
+            228 => { "mnem" => "CPX", "mode" => "zpg", "more" => 1, "pattern" => "%s" },
+            229 => { "mnem" => "SBC", "mode" => "zpg", "more" => 1, "pattern" => "%s" },
+            230 => { "mnem" => "INC", "mode" => "zpg", "more" => 1, "pattern" => "%s" },
+            232 => { "mnem" => "INX", "mode" => "impl", "more" => 0, "pattern" => "" },
+            233 => { "mnem" => "SBC", "mode" => "#", "more" => 1, "pattern" => "#%s" },
+            234 => { "mnem" => "NOP", "mode" => "impl", "more" => 0, "pattern" => "" },
+            236 => { "mnem" => "CPX", "mode" => "abs", "more" => 2, "pattern" => "%s" },
+            237 => { "mnem" => "SBC", "mode" => "abs", "more" => 2, "pattern" => "%s" },
+            238 => { "mnem" => "INC", "mode" => "abs", "more" => 2, "pattern" => "%s" },
+            240 => { "mnem" => "BEQ", "mode" => "rel", "more" => 1, "pattern" => "%s" },
+            241 => { "mnem" => "SBC", "mode" => "ind,Y", "more" => 1, "pattern" => "(%s), Y" },
+            245 => { "mnem" => "SBC", "mode" => "zpg,X", "more" => 1, "pattern" => "%s, X" },
+            246 => { "mnem" => "INC", "mode" => "zpg,X", "more" => 1, "pattern" => "%s, X" },
+            248 => { "mnem" => "SED", "mode" => "impl", "more" => 0, "pattern" => "" },
+            249 => { "mnem" => "SBC", "mode" => "abs,Y", "more" => 2, "pattern" => "%s, Y" },
+            253 => { "mnem" => "SBC", "mode" => "abs,X", "more" => 2, "pattern" => "%s, X" },
+            254 => { "mnem" => "INC", "mode" => "abs,X", "more" => 2, "pattern" => "%s, X" }
+);
+
+#########################  BEGIN FUNCTION DEFINITIONS  #########################
+
+sub file_contents {
+    my $filename = shift;
+    my $data;
+    open FH, "<", $filename or die "Could not open $filename: $!";
+    $data .= $_ while $_ = <FH>;
+    close FH;
+    $data;
+};
+
+sub put_file {
+    my $filename = shift;
+    open FH, ">", $filename or die "Could not open $filename for writing: $!";
+    print FH @_;
+    close FH;
+};
+
+sub check_folder_empty {
+    my $empty = TRUE;
+    my $folder = shift;
+    opendir FOLDER, $folder;
+    rewinddir FOLDER;
+    while ($_ = readdir FOLDER) {
+        $empty = FALSE unless /^\./;
+    };
+    $empty;
+};
+
+sub high_nybble {
+    my $byte = shift;
+    ($byte & 0b11110000) >> 4;
+};
+
+sub low_nybble {
+    my $byte = shift;
+    $byte & 0b1111;
+};
+
+
+##########################  END FUNCTION DEFINITIONS  ##########################
+
+my %new_label = ();
+my @new_label = ();
+my %label = ();
+my %hits = ();
+my ($label);
+my $json_obj = {};
+
+if ($JSON_FILE) {
+    my $json_string = file_contents $JSON_FILE;
+    $json_obj = $JSON->decode($json_string);
+    my ($addr, $name);
+    my %tmp_label = %{$json_obj->{"labels"}};
+    foreach (keys %tmp_label) {
+        $addr = $_;
+        $name = $tmp_label{$_};
+        $addr =~ s/(0x|&)(\S+)/hex $2/ei;
+        $label{$addr} = $name;
+    };
+};
+
+$data = "";
+
+if ($IN_FILE) {
+    $data = file_contents $IN_FILE;
+};
+
+printf "Load address = &%04X  Execution address = &%04X\n", $LOAD_ADDR, $EXEC_ADDR;
+
+$ptr = $LOAD_ADDR;
+foreach (unpack "C*", $data) {
+    $mem[$ptr++] = $_;
+};
+
+$first_free = $ptr;
+
+printf "Next available address = &%04X\n", $ptr;
+
+if ($json_obj->{"gaps"}) {
+    my ($start, $end);
+    foreach (@{$json_obj->{"gaps"}}) {
+        ($start, $end) = @$_;
+        $start =~ s/(0x|&)(\S+)/hex $2/ei;
+        $end =~ s/(0x|&)(\S+)/hex $2/ei;
+        for ($ptr = $start; $ptr < $end; ++$ptr) {
+            $mem[$ptr] |= 0x100;
+        };
+        push @gap, [$start, $end] unless $gap{$start} || $gap{$end};
+        $gap{$start} = $end;
+        $gap{$end} = $start;
+    };
+};
+
+if ($GAP) {
+    my ($start, $end);
+    while ($GAP =~ /([0-9a-fxA-FX&]+),([0-9a-fxA-FX&]+)/g) {
+        $start = $1;
+        $end = $2;
+        $start =~ s/(0x|&)(\S+)/hex $2/ei;
+        $end =~ s/(0x|&)(\S+)/hex $2/ei;
+        
+        printf "Gap starts at &%04X and ends at &%04X.\n", $start, $end;
+        for ($ptr = $start; $ptr < $end; ++$ptr) {
+            $mem[$ptr] |= 0x100;
+        };
+        push @gap, [$start, $end] unless $gap{$start} || $gap{$end};
+        $gap{$start} = $end;
+        $gap{$end} = $start;
+    };
+};
+
+my ($r, $c, $byte0, $byte1, $byte2, $operand, $chars, $beg, $target);
+
+if ($DUMP) {
+    $ptr = $EXEC_ADDR;
+    while ($ptr < $first_free) {
+        $chars = "";
+        printf "%04X", $ptr;
+        foreach $c (0 .. 15) {
+            if (defined ($_ = $mem[$ptr++])) {
+                printf " %02X", $_;
+                $chars .= ($_ > 31 && $_ < 127) ? pack "C", $_ : ".";
+            }
+            else {
+                print " **";
+                $chars .= " ";
+            };
+        };
+        printf " %s\n", $chars;
+    };
+    printf "%04X\n", $ptr;
+    
+    exit;   #  We're done here
+};
+
+###############  IF WE'RE NOT DUMPING, WE MUST BE DISASSEMBLING  ###############
+
+my $done = HIT_EOF;
+$ptr = $EXEC_ADDR;
+
+#  Input file consists of chunks of 0 or more bytes of not-code,
+#  followed by 0 or more bytes of code, but as much as possible; ending
+#  with an instruction that would break the flow of exectution such as
+#  RTS, RTI, JMP or a conditional branch that is followed by something
+#  other than code  (including eof).  Absent such a clean ending, a
+#  section that once looked like code will be declared not-code all the
+#  way back to the last clean ending.
+
+my ($not_code_count, $code_count, $code_start, $bktrack);
+
+
+while ($ptr < $first_free) {
+    $not_code_count = $code_count = 0;
+    $done = FALSE;
+    $chunk_start = $ptr;
+    printf "Start of chunk &%04X\n", $chunk_start;
+    #  Be sure to put a label at the start of a chunk
+    $label{$ptr} ||= sprintf "tl%04x", $ptr;
+    @new_dis = ();
+    @new_dis2 = ();
+    while (!$done && $ptr < $first_free) {
+        #printf "%04X", $ptr;
+        if ($label = $new_label{$ptr} || $label{$ptr}) {
+            printf ".%-10s ", $label;
+        }
+        else {
+            print " " x 12;
+        };
+        #  Exclude newly-defined labels from disassembly
+        if ($label = $label{$ptr}) {
+            push @new_dis, sprintf ".%s", $label;
+        };
+        $beg = $ptr;
+        $_ = $mem[$ptr];
+        next unless defined $_;
+        printf "%04X %02X", $ptr, $_ & 0xff;
+        #printf "%04X", $ptr;
+        #printf " %02X", $_ & 0xff;
+
+        if (!($_ & 0x100) && $INSTR{$_}) {
+            if (!$code_count) {
+                $code_start = $ptr;
+                unless ($label = $new_label{$ptr} || $label{$ptr}) {
+                    $label = sprintf "tl%04x", $ptr;
+                    $new_label{$ptr} = $label;
+                }
+                print " <-- Possible code section begins\n";
+                printf ".%-10s %04X %02X", $label, $ptr, $_ & 0xff;
+            };
+            
+            $mnemonic = $INSTR{$_}{"mnem"};
+            $mode = $INSTR{$_}{"mode"};
+            $more = $INSTR{$_}{"more"};
+            $pattern = $INSTR{$_}{"pattern"};
+            
+            if ($more >= 1) {
+                $byte1 = $mem[$ptr + 1] // 0;
+                $operand = $byte1;
+                printf " %02X", $byte1;
+            }
+            else {
+                print "   ";
+            };
+            if ($more >= 2) {
+                $byte2 = $mem[$ptr + 2] // 0;
+                $operand += $byte2 << 8;
+                printf " %02X", $byte2;
+            }
+            else {
+                print "   ";
+            };
+            if ($mode =~ /rel/) {
+                if ($operand & 0x80) {      #  negative branch
+                    $operand -= 256;
+                };
+                $operand += $ptr + 2;
+                #print "**REL**  ";
+            };
+            
+            #printf " %3s  %-7s %d ", $mnemonic, $mode, $more;
+            printf " %3s", $mnemonic;
+            $dis = sprintf "    %3s", $mnemonic;
+
+            if ($mode =~ /zpg|abs|ind|rel/i) {
+                ++$hits{$operand};
+                unless ($label = $new_label{$operand} || $label{$operand}) {
+                    $label = sprintf "tl%04x", $operand;
+                    #printf "\n%3s %-8s -- target is &%04X, label %s", $mnemonic, $mode, $operand, $label;
+                    $new_label{$operand} = $label;
+                };
+            };
+            
+            if ($more) {
+                if (($mode !~ /#/) && ($label = $new_label{$operand} || $label{$operand})) {
+                    $target = $label;
+                }
+                elsif ($mode =~ /zpg|ind,|#/i) {
+                    $target = sprintf "&%02X", $operand;
+                }
+                else {
+                    $target = sprintf "&%04X", $operand;
+                };
+                print " ";
+                printf $pattern, $target;
+                
+                #  For the disassembly, we only want to include known labels
+                if (($mode !~ /#/) && ($label = $label{$operand})) {
+                    $target = $label;
+                }
+                elsif ($mode =~ /zpg|ind,|#/i) {
+                    $target = sprintf "&%02X", $operand;
+                }
+                else {
+                    $target = sprintf "&%04X", $operand;
+                };
+                $dis .= sprintf " $pattern", $target;
+            }
+            else {
+                printf " %s", $pattern;
+                $dis .= sprintf " %s", $pattern;
+            };
+            push @new_dis, $dis;
+            push @new_dis2, { "addr" => $ptr, "mnem" => $mnemonic, "mode" => $mode,
+                              "more" => $more, "pattern" => $pattern,
+                              "operand" => $more ? $operand : undef };
+            $code_count += $more + 1;
+            $ptr += $more + 1;
+            print "\n";
+            
+            if ($mnemonic =~ /RTS|RTI|JMP|BNE|BEQ|BPL|BMI|B[CV][CS]/i) {
+                printf "Code ends cleanly with %s, preceded by %d byte%s not-code.\n",
+                    $mnemonic, $not_code_count, ($not_code_count == 1 ? "" : "s");
+                $done = CLEAN_END;
+            };            
+        }
+        else {  #  Not a valid instruction, or part of a gap
+            if ($_ & 0x100) {
+                print " <-- Gap\n";
+            }
+            else {
+                print " <-- Invalid opcode\n";
+            };
+            if ($code_count) {
+                print "Never mind, it's not code after all.\n";
+                #  Anything we thought was code, turns out not to be.
+                #  Tack all those bytes onto the not_code
+                $not_code_count += $code_count;
+                $code_count = 0;
+                foreach ($code_start .. $ptr - 1) {
+                    push @not_code, $mem[$_];
+                    #printf "%04X %02X\n", $_, $mem[$_]; 
+                };
+            };
+            push @not_code, $_ & 0xff;
+            ++$not_code_count;
+            ++$ptr;
+            %new_label = ();
+            @new_dis = ();
+        };
+        #print "\n";
+    };
+
+    #  Deal with the not-code section first
+    
+    #print "\@not_code = ", Dumper \@not_code;
+    
+    if (@not_code) {
+        my $ptr = $chunk_start;
+        $dis = "";
+        $sep = "    ";
+        foreach (@not_code) {
+            if (length $dis >= 70) {
+                push @dis, $dis;
+                print "$dis\n";
+                $dis = "";
+                $sep = "    ";
+            };
+            if ($label = $new_label{$ptr} || $label{$ptr}) {
+                if ($dis) {
+                    push @dis, $dis;
+                    print "$dis\n";
+                    $dis = "";
+                    $sep = "    ";
+                };
+                $dis = sprintf ".%-10s ", $label;
+                print "$dis\n";
+                push @dis, $dis;
+                $dis = "";
+            };
+            $dis .= $sep . sprintf "EQUB &%02X", $_;
+            $sep = " : ";
+            ++$ptr;
+        };
+        if ($dis) {
+            push @dis, $dis;
+            print "$dis\n";
+        };
+        @not_code = ();
+    };
+    
+    #  Now the code section
+    
+    #print "\@new_dis = ", Dumper \@new_dis;
+    #print "\@new_dis2 = ", Dumper \@new_dis2;
+
+    foreach (@new_dis2) {
+        my $ptr = $_->{"addr"};
+        my $mnemonic = $_->{"mnem"};
+        my $mode = $_->{"mode"};
+        my $more = $_->{"more"};
+        my $pattern = $_->{"pattern"};
+        my $operand = $_->{"operand"};
+        if ($label = $new_label{$ptr} || $label{$ptr}) {
+            $dis = sprintf ".%-10s ", $label;
+            print "$dis\n";
+            push @dis, $dis;
+        };
+
+        $dis = sprintf "    %3s", $mnemonic;
+        if ($more) {
+            if (($mode !~ /#/) && ($label = $new_label{$operand} || $label{$operand})) {
+                $target = $label;
+            }
+            elsif ($mode =~ /zpg|ind,|#/i) {
+                $target = sprintf "&%02X", $operand;
+            }
+            else {
+                $target = sprintf "&%04X", $operand;
+            };
+            $dis .= sprintf " $pattern", $target;
+        }
+        else {
+            $dis .= sprintf " %s", $pattern;
+        };
+        print "$dis\n";
+        push @dis, $dis;
+    };
+    
+    #push @dis, @new_dis;
+    @new_dis = ();
+    @new_dis2 = ();
+    if (keys %new_label) {
+        print "New labels:\n"           unless $NO_LABELS;;
+        foreach (sort {$a <=> $b} keys %new_label) {
+            $label = $new_label{$_};
+            printf "  %-10s = &%04X  %4d\n", $label, $_, $hits{$_} // 0    unless $NO_LABELS;
+            $label{$_} = $label;
+        };
+        %new_label = ();
+    }
+    else {
+            print "No new labels.\n"        unless $NO_LABELS;
+    };
+    printf "Chunk finished &%04X . Not-code: %d Code: %d\n",
+        $ptr, $not_code_count, $code_count;
+};
+
+unless ($NO_LABELS) {
+    print "\nLabels:\n";
+    foreach (sort {$a <=> $b} keys %label) {
+        printf "  %-10s = &%04X  %4d\n", $label{$_}, $_, $hits{$_} // 0;
+    };
+};
+
+if ($OUT_FILE) {
+    #  Output a JSON file with all the labels and gaps
+    open OFH, ">", $OUT_FILE or die "Could not open $OUT_FILE for writing: $!";
+    print OFH $JSON->pretty->encode({ "labels" => {%label},
+                                      "gaps"   => [@gap] });
+    close OFH;
+};
+
+#print Dumper \@dis;
+
+if ($ASM_FILE) {
+    #  Output a BeebAsm-compatible source file
+    
+    my $asm_save;
+    if ($ASM_SAVE) {
+        $asm_save = $ASM_SAVE;
+    }
+    else {
+        $asm_save = $ASM_FILE;
+        $asm_save =~ s/(\.[^.]*?)?$/.rec/;
+    };
+    
+    my %dot_label = ();
+    
+    open OFH, ">", $ASM_FILE or die "Could not open $ASM_FILE for writing: $!";
+
+    printf OFH "\\ Recreation of \"%s\"\n\n", $IN_FILE;
+    printf OFH "ORG &%04X\n\n", $LOAD_ADDR;
+    
+    foreach (@dis) {
+        if (/\.(\S+)/) {
+            $dot_label{$1} = TRUE;
+            #printf "***** DOT-LABEL '%s' *****\n", $1;
+        };
+    };
+
+    print OFH "\\  Labels:\n";
+    foreach (sort {$a <=> $b} keys %label) {
+        if ($dot_label{$label{$_}}) {
+            #printf "Excluding dot-label '%s'\n", $_;
+        }
+        else {
+            printf OFH "%-10s = &%04X\n", $label{$_}, $_;
+            #printf "%-10s = &%04X\n", $label{$_}, $_;
+        };
+    };
+    print OFH "\n";
+    
+    print OFH join "\n", @dis;
+    print OFH "\n\n";
+    printf OFH "SAVE \"%s\",&%04X,&%04X,&%04X\n", $asm_save, $LOAD_ADDR, $first_free, $EXEC_ADDR;
+    close OFH;
+};
+
+
+#print "\n";
+
+#print Dumper \@mem;
+
+exit;
+
+################################################################################
+#                                                                              #
+#  THIS SOFTWARE IS DEDICATED TO THE PUBLIC DOMAIN 2025.  NO COPYRIGHT         #
+#  SUBSISTS IN IT.  YOU MAY USE IT, ABUSE IT, ENJOY IT OR DESTROY IT FREELY.   #
+#                                                                              #
+################################################################################

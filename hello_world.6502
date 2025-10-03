@@ -1,0 +1,24 @@
+\  HELLO WORLD PROGRAM
+
+ORG &900
+
+oswrch = &FFEE
+
+._begin
+    LDX #0
+.print_loop
+    LDA message, X
+    BEQ done
+    JSR oswrch
+    INX
+    BNE print_loop
+.done
+    RTS
+.message
+    EQUS "Hello, world!"
+    EQUB 13
+    EQUB 10
+    EQUB 0
+._end
+    
+SAVE "HELLO", _begin, _end
