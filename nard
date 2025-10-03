@@ -3,6 +3,8 @@
 #  NARD -- Not A Real Disassembler
 #  PD 2025 Julie Kirsty Louise Montoya
 
+#  Version 0.2.0  2025-10-03
+
 use strict;
 use Getopt::Std;
 use Data::Dumper;
