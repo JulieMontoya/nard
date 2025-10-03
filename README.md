@@ -17,22 +17,57 @@ in the flow of execution, is it considered legitimate.
 
 ## OPTIONS
 
-+ **-i _filename_** -- specifies the input filename.
-+ **-l _load_addr_** -- specifies the load address.
-+ **-e _exec_addr_** -- specifies the execution address.
-+ **-g _gap_start_addr_,_gap_end_addr_** -- specifies the starting and after-ending addresses of a gap of non-code.
-+ **-o _json_filename_** -- specifies a file to which to write label and gap definitions.
-+ **-j _json_filename_** -- specifies a file from which to read label and gap definitions.
-+ **-a _asm_filename_** -- specifies a file to which to write the assembly language output.
-+ **-A _dfs_filename_** -- specifies the DFS filename within the eventual disc image.
+### -i _filename_
 
-The input file should be a raw 6502 machine code file, as extracted from a disc image.  Addresses can be
-supplied in decimal, or prefixed with **0x**  (or **&**, but that must be escaped with a backslash or inside
-speech marks).  Multiple gaps may be specified as a space-separated list in speech marks, such as
-**-g "_gap_start_addr1_,_gap_end_addr1_ _gap_start_addr2_,_gap_end_addr2_ _gap_start_addr3_,_gap_end_addr3_ "**.
-Note that gap ending addresses are actually the first address that is _not_ part of the gap  (i.e., like `*SAVE`).
+Specifies the input filename.  This should be a raw 6502 machine code file, as extracted from a
+disc image.
+
+### -l _load_addr_
+
+Specifies the load address.  This can be supplied in decimal, or in hex if prefixed with **0x**  (or
+**&**, but that would have to be escaped with a backslash or inside speech marks).
+
+### -e _exec_addr_
+
+Specifies the execution address.
+
+### -g _gap_start_addr_,_gap_end_add_
+
+Specifies the starting and after-ending addresses of a gap of non-code  (i.e., text, or a table
+of data or addresses).    Multiple gaps may be specified as a space-separated list in speech marks,
+such as
+`-g "_gap_start_addr1_,_gap_end_addr1_ _gap_start_addr2_,_gap_end_addr2_ _gap_start_addr3_,_gap_end_addr3_ "`
+Note that gap ending addresses are actually the first address that is _not_ part of the gap  (i.e.,
+just like `*SAVE`).
+
+### -o _json_filename_
+
+Specifies a file to which to write label and gap definitions, in JSON format.  This saves the effort
+of repeatedly entering multiple gaps, and can be edited to change the temporary labels  (of the form
+`tl090d`, i.e. the letters "tl" for "temporary label" and its hexadecimal address)  to something more
+meaningful as deduced from studying the code.
+
+### -j _json_filename
+
+Specifies a file from which to read label and gap definitions.
+
+### -a _assembly_filename_
+
+Specifies a file to which to write the assembly language output.
+
+### -A _dfs_filename_
+
+Specifies the filename to use in the `SAVE` statement in the assembly language output
+file.  Note that if BeebAsm's `-do` option is used to create a disc image, this filename
+will become the DFS filename within that disc image; so in this case, it must be a valid
+DFS filename.  Otherwise, if `-do` is not given, it will be saved in the default folder.
+The default `SAVE` name is based on the input filename, but with the extension ".rec" for
+"recreation".
 
 ## EXAMPLES
+
+The file `HELLO`, as included above with its BeebAsm source code `hello_world.6502`, is
+used for these examples.
 
 ```
 $ ./nard -i HELLO -l 0x900
@@ -61,4 +96,11 @@ $ diff <(hd HELLO) <(hd HELLO2)
 ```
 and let the computer prove it.
 
-The assembly language file can be further edited, and comments added
+The assembly language file can be further edited, and comments added to suit.
+
+# Further Work
+
+The assembly language output of non-code sections needs to be tidied up.  At present, every
+byte is specified individually with `EQUB`.  This will eventually be improved by gathering
+up strings of printable characters into `EQUS` statements.
+
