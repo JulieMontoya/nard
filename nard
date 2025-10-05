@@ -488,6 +488,7 @@ while ($ptr < $first_free) {
             ++$ptr;
             %new_label = ();
             @new_dis = ();
+            @new_dis2 = ();
         };
         #print "\n";
     };
@@ -519,7 +520,22 @@ while ($ptr < $first_free) {
                 push @dis, $dis;
                 $dis = "";
             };
-            $dis .= $sep . sprintf "EQUB &%02X", $_;
+            if ($_ >= 0x20 && $_ < 0x7f && $_ != 0x22) {
+                #printf "Printable %c (&%02X)  .....  ", $_, $_;
+                if ($dis =~ /"$/) {
+                    #print "Growing existing EQUS.";
+                    $dis =~ s/"$/pack("C", $_) . '"'/e;
+                    #print $dis, "\n";
+                }
+                else {
+                    #print "Starting EQUS.\n";
+                    $dis .= $sep . sprintf "EQUS \"%c\"", $_;
+                };
+            }
+            else {
+                #printf "Non-printable &%02X\n", $_;
+                $dis .= $sep . sprintf "EQUB &%02X", $_;
+            };
             $sep = " : ";
             ++$ptr;
         };
