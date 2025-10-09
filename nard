@@ -234,7 +234,7 @@ sub low_nybble {
 my %new_label = ();
 my @new_label = ();
 my %label = ();
-my %hits = ();
+my (%hits, %hits_by_mode, %mode, @mode, %likely_type);
 my ($label);
 my $json_obj = {};
 
@@ -415,6 +415,28 @@ while ($ptr < $first_free) {
 
             if ($mode =~ /zpg|abs|ind|rel/i) {
                 ++$hits{$operand};
+                ++$hits_by_mode{$operand}{$mode};
+                ++$mode{$mode};
+                #unless ($likely_type{$operand}) {
+                    if ($mode =~ /^ind$/i) {
+                        $likely_type{$operand} = "jump vector";
+                    }
+                    elsif ($mode =~ /ind/i) {
+                        $likely_type{$operand} = "pointer";
+                    }
+                    elsif ($mode =~ /^rel$/i) {
+                        $likely_type{$operand} = $operand < $ptr ? "loop" : "skip";
+                    }
+                    elsif ($mode =~ /(zpg|abs),/i) {
+                        $likely_type{$operand} = "array base";
+                    }
+                    elsif ($mnemonic =~ /LD|ST/i && !$likely_type{$operand}) {
+                        $likely_type{$operand} = "variable";
+                    }
+                    elsif ($mnemonic =~ /JSR|JMP/i) {
+                        $likely_type{$operand} = "subroutine";
+                    };
+                #};
                 unless ($label = $new_label{$operand} || $label{$operand}) {
                     $label = sprintf "tl%04x", $operand;
                     #printf "\n%3s %-8s -- target is &%04X, label %s", $mnemonic, $mode, $operand, $label;
@@ -580,6 +602,7 @@ while ($ptr < $first_free) {
         else {
             $dis .= sprintf " %s", $pattern;
         };
+        
         print "$dis\n";
         push @dis, $dis;
     };
@@ -648,11 +671,15 @@ if ($ASM_FILE) {
 
     print OFH "\\  Labels:\n";
     foreach (sort {$a <=> $b} keys %label) {
-        if ($dot_label{$label{$_}}) {
+        $label = $label{$_};
+        if ($dot_label{$label}) {
             #printf "Excluding dot-label '%s'\n", $_;
         }
+        elsif ($label =~ /[+-]/) {
+            #printf "Excluding calculated label '%s'\n", $_;
+        }
         else {
-            printf OFH "%-10s = &%04X\n", $label{$_}, $_;
+            printf OFH "%-10s = &%04X  \\  %s\n", $label{$_}, $_, $likely_type{$_} // "";
             #printf "%-10s = &%04X\n", $label{$_}, $_;
         };
     };
@@ -664,6 +691,31 @@ if ($ASM_FILE) {
     close OFH;
 };
 
+#print Dumper \%hits_by_mode;
+
+# print "\n";
+# print "label     |addr |";
+# #print " " x 16, "|";
+# foreach (sort keys %mode) {
+#     printf "%-5s|", $_;
+#     push @mode, $_;
+# };
+# print "\n";
+# 
+# foreach $ptr (sort {$a <=> $b} keys %hits_by_mode) {
+#     printf "%-10s|&%04X|", $label{$ptr}, $ptr;
+#     foreach $mode (@mode) {
+#         printf "%5s|", $hits_by_mode{$ptr}{$mode} // "";
+#     };
+#     printf "%s", $likely_type{$ptr} // "";
+#     print "\n";
+# };
+# 
+# print " " x 16, "|";
+# foreach (@mode) {
+#     printf "%-5s|", $_;
+# };
+# print "\n";
 
 #print "\n";
 
