@@ -145,6 +145,18 @@ the program, especially around the area where the error occurs --
 you can pipe it through `less`, or direct it towards a file and open
 that in a text editor, if you like.
 
+# History
+
+**2025-10-03  V0.2.0**
+
+**2025-10-09  V0.2.2**  Adds detection of likely types of labels, based
+on the addressing modes used in the instructions where they are
+encountered.  These are added as comments in the assembly language
+output.  Also suppresses output of labels matching `/[+-]/`; which is
+intended to allow "calculated" labels such as `msg_ptr + 1` to be used
+in the JSON file.  _This is just a temporary arrangement until I can_
+_think of a better way._
+
 # Further Work
 
 _The assembly language output of non-code sections needs to be tidied_
