@@ -3,7 +3,12 @@
 #  NARD -- Not A Real Disassembler
 #  PD 2025 Julie Kirsty Louise Montoya
 
-#  Version 0.2.2  2025-10-09
+#  Version 0.2.3  2025-10-10
+
+#  Now generates table of hits on labels, which can be saved either as
+#  plain text or CSV spreadsheet  (auto-determined from filename)
+#  Also JSON disassembly file, which can be reconstructed elsewhere
+#  Still to do: proper calculated labels  (but bodgy way works for now)
 
 use strict;
 use Getopt::Std;
@@ -15,7 +20,7 @@ use JSON;
 $| = TRUE;
 
 my %OPTIONS;
-getopts "A:La:de:g:i:j:l:o:v", \%OPTIONS;
+getopts "A:J:La:de:g:i:j:l:o:t:vw", \%OPTIONS;
 
 my $VERBOSE     = $OPTIONS{"v"};
 my $IN_FILE     = $OPTIONS{"i"};
@@ -30,10 +35,13 @@ $EXEC_ADDR =~ s/(0x|&)(\S+)/hex $2/ei;
 my $GAP         = $OPTIONS{"g"};
 my $DUMP        = $OPTIONS{"d"};
 my $NO_LABELS   = $OPTIONS{"L"};
+my $NO_WORD_VARS= $OPTIONS{"w"};
+my $JSD_FILE    = $OPTIONS{"J"};
+my $TABLE_FILE  = $OPTIONS{"t"};
 my $JSON = new JSON;
 
 my ($data, @gap, %gap, @mem, @chunk, $ptr, $first_free, $chunk_start, $mnemonic,
-    $mode, $more, $pattern, $sep, $dis, @dis, @new_dis, @new_dis2,  @not_code,
+    $mode, $more, $pattern, $sep, $dis, @dis, @new_dis, @dis_obj, @not_code,
     $fb_mnem);
 
 my %INSTR = ( 0 => { "mnem" => "BRK", "mode" => "impl", "more" => 0, "pattern" => "" },
@@ -234,7 +242,7 @@ sub low_nybble {
 my %new_label = ();
 my @new_label = ();
 my %label = ();
-my (%hits, %hits_by_mode, %mode, @mode, %likely_type);
+my (%dis_line, %hits, %hits_by_mode, %mode, @mode, %likely_type);
 my ($label);
 my $json_obj = {};
 
@@ -349,8 +357,8 @@ while ($ptr < $first_free) {
     #  Be sure to put a label at the start of a chunk
     $label{$ptr} ||= sprintf "tl%04x", $ptr;
     @new_dis = ();
-    @new_dis2 = ();
     while (!$done && $ptr < $first_free) {
+        %dis_line = ();
         #printf "%04X", $ptr;
         if ($label = $new_label{$ptr} || $label{$ptr}) {
             printf ".%-10s ", $label;
@@ -359,8 +367,8 @@ while ($ptr < $first_free) {
             print " " x 12;
         };
         #  Exclude newly-defined labels from disassembly
-        if ($label = $label{$ptr}) {
-            push @new_dis, sprintf ".%s", $label;
+        if ($label{$ptr}) {
+            $dis_line{"label"} = $label;
         };
         $beg = $ptr;
         $_ = $mem[$ptr];
@@ -473,10 +481,17 @@ while ($ptr < $first_free) {
                 printf " %s", $pattern;
                 $dis .= sprintf " %s", $pattern;
             };
-            push @new_dis, $dis;
-            push @new_dis2, { "addr" => $ptr, "mnem" => $mnemonic, "mode" => $mode,
-                              "more" => $more, "pattern" => $pattern,
-                              "operand" => $more ? $operand : undef };
+#             %dis_line = ( "addr" => $ptr, "mnem" => $mnemonic, "mode" => $mode,
+#                           "more" => $more, "pattern" => $pattern,
+#                           "operand" => $more ? $operand : undef );
+            $dis_line{"addr"} = $ptr;
+            $dis_line{"mnem"} = $mnemonic;
+            $dis_line{"mode"} = $mode;
+            $dis_line{"more"} = $more;
+            $dis_line{"pattern"} = $pattern;
+            $dis_line{"operand"} = $operand     if $more;
+
+            push @new_dis, { %dis_line };
             $code_count += $more + 1;
             $ptr += $more + 1;
             print "\n";
@@ -510,19 +525,22 @@ while ($ptr < $first_free) {
             ++$ptr;
             %new_label = ();
             @new_dis = ();
-            @new_dis2 = ();
         };
         #print "\n";
     };
 
     #  Deal with the not-code section first
     
-    #print "\@not_code = ", Dumper \@not_code;
+    print "\@not_code = ", Dumper \@not_code;
     
     if (@not_code) {
         my $ptr = $chunk_start;
         $dis = "";
         $sep = "    ";
+        %dis_line = ( "addr" => $ptr, "data" => [ @not_code ] );
+        if ($label = $new_label{$ptr} || $label{$ptr}) {
+            $dis_line{"label"} = $label;
+        };
         foreach (@not_code) {
             if (length $dis >= 70) {
                 push @dis, $dis;
@@ -565,31 +583,38 @@ while ($ptr < $first_free) {
             push @dis, $dis;
             print "$dis\n";
         };
+        push @dis_obj, { %dis_line };
         @not_code = ();
     };
     
     #  Now the code section
     
     #print "\@new_dis = ", Dumper \@new_dis;
-    #print "\@new_dis2 = ", Dumper \@new_dis2;
-
-    foreach (@new_dis2) {
+    push @dis_obj, @new_dis;
+    foreach (@new_dis) {
         my $ptr = $_->{"addr"};
         my $mnemonic = $_->{"mnem"};
         my $mode = $_->{"mode"};
         my $more = $_->{"more"};
         my $pattern = $_->{"pattern"};
         my $operand = $_->{"operand"};
-        if ($label = $new_label{$ptr} || $label{$ptr}) {
+        my $label = $_->{"label"};
+        if ($label) {
             $dis = sprintf ".%-10s ", $label;
             print "$dis\n";
             push @dis, $dis;
         };
-
         $dis = sprintf "    %3s", $mnemonic;
         if ($more) {
             if (($mode !~ /#/) && ($label = $new_label{$operand} || $label{$operand})) {
                 $target = $label;
+            }
+            elsif (($mode !~ /#/) && ($label = $new_label{$operand - 1}
+                                            || $label{$operand - 1})) {
+                $target = sprintf "%s + %d", $label, 1;
+                printf "Calculating label %s for &%04X from %s.\n",
+                    $target, $operand, $label;
+                die "stopping short";
             }
             elsif ($mode =~ /zpg|ind,|#/i) {
                 $target = sprintf "&%02X", $operand;
@@ -606,10 +631,8 @@ while ($ptr < $first_free) {
         print "$dis\n";
         push @dis, $dis;
     };
-    
-    #push @dis, @new_dis;
+        
     @new_dis = ();
-    @new_dis2 = ();
     if (keys %new_label) {
         print "New labels:\n"           unless $NO_LABELS;;
         foreach (sort {$a <=> $b} keys %new_label) {
@@ -691,32 +714,59 @@ if ($ASM_FILE) {
     close OFH;
 };
 
+if ($JSD_FILE) {
+    open OFH, ">", $JSD_FILE or die "Could not open $JSD_FILE for writing: $!";
+    print OFH $JSON->pretty->encode({ "dis" => [ @dis_obj ] });
+    close OFH;
+};
+
 #print Dumper \%hits_by_mode;
 
-# print "\n";
-# print "label     |addr |";
-# #print " " x 16, "|";
-# foreach (sort keys %mode) {
-#     printf "%-5s|", $_;
-#     push @mode, $_;
-# };
-# print "\n";
-# 
-# foreach $ptr (sort {$a <=> $b} keys %hits_by_mode) {
-#     printf "%-10s|&%04X|", $label{$ptr}, $ptr;
-#     foreach $mode (@mode) {
-#         printf "%5s|", $hits_by_mode{$ptr}{$mode} // "";
-#     };
-#     printf "%s", $likely_type{$ptr} // "";
-#     print "\n";
-# };
-# 
-# print " " x 16, "|";
-# foreach (@mode) {
-#     printf "%-5s|", $_;
-# };
-# print "\n";
+if ($TABLE_FILE) {
+    my @mode;
+    open OFH, ">", $TABLE_FILE or die "Could not open $TABLE_FILE for writing: $!";
+    #print OFH "\n";
+    foreach (sort keys %mode) {
+        push @mode, $_;
+    };
+    if ($TABLE_FILE =~ /\.csv$/i) {         #  Comma Separated Values
+        print OFH "\"Label\",\"Address\"";
+        foreach (@mode) {
+            printf OFH ",\"%s\"", $_;
+        };
+        print OFH ",\"likely type\"\n";
+        foreach $ptr (sort {$a <=> $b} keys %hits_by_mode) {
+            printf OFH "\"%s\",\"&%04X\"", $label{$ptr}, $ptr;
+            foreach $mode (@mode) {
+                printf OFH ",%s", $hits_by_mode{$ptr}{$mode} // "";
+            };
+            printf OFH ",\"%s\"\n", $likely_type{$ptr} // "";
+        };        
+    }
+    else {                                  #  Plain text table
+        print OFH "label     |addr |";
+        foreach (@mode) {
+            printf OFH "%-5s|", $_;
+        };
+        print OFH "\n";
 
+        foreach $ptr (sort {$a <=> $b} keys %hits_by_mode) {
+            printf OFH "%-10s|&%04X|", $label{$ptr}, $ptr;
+            foreach $mode (@mode) {
+                printf OFH "%5s|", $hits_by_mode{$ptr}{$mode} // "";
+            };
+            printf OFH "%s", $likely_type{$ptr} // "";
+            print OFH "\n";
+        };
+
+        print OFH " " x 16, "|";
+        foreach (@mode) {
+            printf OFH "%-5s|", $_;
+        };
+        print OFH "\n";
+    };
+    close OFH;
+};
 #print "\n";
 
 #print Dumper \@mem;
