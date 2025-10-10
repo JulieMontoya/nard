@@ -531,7 +531,7 @@ while ($ptr < $first_free) {
 
     #  Deal with the not-code section first
     
-    print "\@not_code = ", Dumper \@not_code;
+    #print "\@not_code = ", Dumper \@not_code;
     
     if (@not_code) {
         my $ptr = $chunk_start;
