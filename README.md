@@ -55,18 +55,34 @@ marks, such as
 Note that gap ending addresses are actually the first address that is
 _not_ part of the gap  (i.e., just like `*SAVE`).
 
+Gap definitions are saved in the JSON output file if `-o` is used.
+
 ### -o _json_filename_
 
-Specifies a file to which to write label and gap definitions, in JSON
-format.  This saves the effort of repeatedly entering multiple gaps,
-and can be edited to change the temporary labels  (of the form
-`tl090d`, i.e. the letters "tl" for "temporary label" and its
-hexadecimal address)  to something more meaningful as deduced from
-studying the code.
+Specifies a file to which to write label, gap and word variable
+definitions, in JSON format.  This saves the effort of repeatedly
+entering multiple gaps and word variables, and can be edited to change
+the temporary labels  (of the form `tl090d`, i.e. the letters "tl" for
+"temporary label" and its hexadecimal address)  to something more
+meaningful as deduced from studying the code.
 
 ### -j _json_filename
 
-Specifies a file from which to read label and gap definitions.
+Specifies a file from which to read label, gap and word variable
+definitions.
+
+### -w _word_var_addr_
+
+Specifies an address to be treated as a word variable.  The
+following address will not be given a label of its own, but only
+referred to in terms of the label for the original address + 1.
+
+`-w 80` means, the address &81 will _not_ be given the temporary label
+`tl0081`; but rather referred to as `tl0080 + 1`  (or whatever you have
+renamed `tl0080` to, plus one.) 
+
+A comma-separated list of word variable addresses can be specified,
+e.g. `-w 0x80,0x82,0x84,0x86`.
 
 ### -a _assembly_filename_
 
@@ -81,6 +97,19 @@ that disc image; so in this case, it must be a valid DFS filename.
 Otherwise, if `-do` is not given, it will be saved in the current
 folder. The default `SAVE` name is based on the input filename, but
 with the extension ".rec" for "recreation".
+
+### -t _table_filename_
+
+Writes a table of labels, counting the hits on each one split by
+addressing mode and giving the likely type of each one based thereupon
+as follows:
+
++ A target of a forward relative branch is a _skip_.
++ A target of a backward relative branch is a _loop_.
++ A target of a `JSR` is a _subroutine_.
++ A target of an indirect `JMP()` instruction is a _jump vector_.
++ A zero page address used in `(zpg), Y` or `(zpg, X)` modes is a _pointer_.
++ An address that only gets read or written is just a _variable_.
 
 ## EXAMPLES
 

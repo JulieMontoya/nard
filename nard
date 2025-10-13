@@ -3,12 +3,16 @@
 #  NARD -- Not A Real Disassembler
 #  PD 2025 Julie Kirsty Louise Montoya
 
-#  Version 0.2.3  2025-10-10
+#  Version 0.2.5  2025-10-12
+
+#  -w parameter specifies comma-separated list of word variables
+#  (like -g)
+#  Following locations will be given calculated labels in asm output.
 
 #  Now generates table of hits on labels, which can be saved either as
 #  plain text or CSV spreadsheet  (auto-determined from filename)
 #  Also JSON disassembly file, which can be reconstructed elsewhere
-#  Still to do: proper calculated labels  (but bodgy way works for now)
+#  Bodgy way of doing calculated labels still works, for now.
 
 use strict;
 use Getopt::Std;
@@ -20,7 +24,7 @@ use JSON;
 $| = TRUE;
 
 my %OPTIONS;
-getopts "A:J:La:de:g:i:j:l:o:t:vw", \%OPTIONS;
+getopts "A:J:La:de:g:i:j:l:o:t:vw:", \%OPTIONS;
 
 my $VERBOSE     = $OPTIONS{"v"};
 my $IN_FILE     = $OPTIONS{"i"};
@@ -35,7 +39,7 @@ $EXEC_ADDR =~ s/(0x|&)(\S+)/hex $2/ei;
 my $GAP         = $OPTIONS{"g"};
 my $DUMP        = $OPTIONS{"d"};
 my $NO_LABELS   = $OPTIONS{"L"};
-my $NO_WORD_VARS= $OPTIONS{"w"};
+my $WORD_VARS   = $OPTIONS{"w"};
 my $JSD_FILE    = $OPTIONS{"J"};
 my $TABLE_FILE  = $OPTIONS{"t"};
 my $JSON = new JSON;
@@ -242,6 +246,7 @@ sub low_nybble {
 my %new_label = ();
 my @new_label = ();
 my %label = ();
+my %word_var = ();
 my (%dis_line, %hits, %hits_by_mode, %mode, @mode, %likely_type);
 my ($label);
 my $json_obj = {};
@@ -307,6 +312,21 @@ if ($GAP) {
         $gap{$start} = $end;
         $gap{$end} = $start;
     };
+};
+
+if ($json_obj->{"word_vars"}) {
+    foreach (keys %{$json_obj->{"word_vars"}}) {
+        s/(0x|&)(\S+)/hex $2/ei;
+        $word_var{$_} = TRUE;
+    };
+};
+
+if ($WORD_VARS) {
+    foreach (split /,/, $WORD_VARS) {
+        s/(0x|&)(\S+)/hex $2/ei;
+        $word_var{$_} = TRUE;
+    };
+    #print Dumper \%word_var;
 };
 
 my ($r, $c, $byte0, $byte1, $byte2, $operand, $chars, $beg, $target);
@@ -425,28 +445,31 @@ while ($ptr < $first_free) {
                 ++$hits{$operand};
                 ++$hits_by_mode{$operand}{$mode};
                 ++$mode{$mode};
-                #unless ($likely_type{$operand}) {
-                    if ($mode =~ /^ind$/i) {
-                        $likely_type{$operand} = "jump vector";
-                    }
-                    elsif ($mode =~ /ind/i) {
-                        $likely_type{$operand} = "pointer";
-                    }
-                    elsif ($mode =~ /^rel$/i) {
-                        $likely_type{$operand} = $operand < $ptr ? "loop" : "skip";
-                    }
-                    elsif ($mode =~ /(zpg|abs),/i) {
-                        $likely_type{$operand} = "array base";
-                    }
-                    elsif ($mnemonic =~ /LD|ST/i && !$likely_type{$operand}) {
-                        $likely_type{$operand} = "variable";
-                    }
-                    elsif ($mnemonic =~ /JSR|JMP/i) {
-                        $likely_type{$operand} = "subroutine";
-                    };
-                #};
-                unless ($label = $new_label{$operand} || $label{$operand}) {
+                if ($mode =~ /^ind$/i) {
+                    $likely_type{$operand} = "jump vector";
+                }
+                elsif ($mode =~ /ind/i) {
+                    $likely_type{$operand} = "pointer";
+                }
+                elsif ($mode =~ /^rel$/i) {
+                    $likely_type{$operand} = $operand < $ptr ? "loop" : "skip";
+                }
+                elsif ($mode =~ /(zpg|abs),/i) {
+                    $likely_type{$operand} = "array base";
+                }
+                elsif ($mnemonic =~ /LD|ST/i && !$likely_type{$operand}) {
+                    $likely_type{$operand} = "variable";
+                }
+                elsif ($mnemonic =~ /JSR|JMP/i) {
+                    $likely_type{$operand} = "subroutine";
+                };
+                                
+                if ($label = $new_label{$operand} || $label{$operand}) {
+                    #printf "# Label %s exists at &%04X # ", $label, $operand;
+                }
+                else {
                     $label = sprintf "tl%04x", $operand;
+                    #printf "# Creating label %s at &%04X # ", $label, $operand;
                     #printf "\n%3s %-8s -- target is &%04X, label %s", $mnemonic, $mode, $operand, $label;
                     $new_label{$operand} = $label;
                 };
@@ -531,7 +554,7 @@ while ($ptr < $first_free) {
 
     #  Deal with the not-code section first
     
-    #print "\@not_code = ", Dumper \@not_code;
+    print "\@not_code = ", Dumper \@not_code;
     
     if (@not_code) {
         my $ptr = $chunk_start;
@@ -606,15 +629,16 @@ while ($ptr < $first_free) {
         };
         $dis = sprintf "    %3s", $mnemonic;
         if ($more) {
-            if (($mode !~ /#/) && ($label = $new_label{$operand} || $label{$operand})) {
-                $target = $label;
-            }
-            elsif (($mode !~ /#/) && ($label = $new_label{$operand - 1}
-                                            || $label{$operand - 1})) {
+            if (($mode !~ /#/)      #  Not immediate; operand is an address
+             && ($word_var{$operand - 1})
+             && ($label = $new_label{$operand - 1}
+                       || $label{$operand - 1})) {
                 $target = sprintf "%s + %d", $label, 1;
-                printf "Calculating label %s for &%04X from %s.\n",
-                    $target, $operand, $label;
-                die "stopping short";
+                #printf "Calculating label %s for &%04X from %s.\n",
+                #    $target, $operand, $label;
+            }
+            elsif (($mode !~ /#/) && ($label = $new_label{$operand} || $label{$operand})) {
+                $target = $label;
             }
             elsif ($mode =~ /zpg|ind,|#/i) {
                 $target = sprintf "&%02X", $operand;
@@ -660,7 +684,8 @@ if ($OUT_FILE) {
     #  Output a JSON file with all the labels and gaps
     open OFH, ">", $OUT_FILE or die "Could not open $OUT_FILE for writing: $!";
     print OFH $JSON->pretty->encode({ "labels" => {%label},
-                                      "gaps"   => [@gap] });
+                                      "gaps"   => [@gap],
+                                      "word_vars" => {%word_var} });
     close OFH;
 };
 
@@ -693,17 +718,21 @@ if ($ASM_FILE) {
     };
 
     print OFH "\\  Labels:\n";
+    #print "\\  Labels:\n";
     foreach (sort {$a <=> $b} keys %label) {
         $label = $label{$_};
         if ($dot_label{$label}) {
-            #printf "Excluding dot-label '%s'\n", $_;
+            #printf "Excluding dot-label '%s' &%04X\n", $label, $_;
+        }
+        elsif ($word_var{$_ - 1}) {
+            #printf "Excluding word var high byte &%04X\n", $_;
         }
         elsif ($label =~ /[+-]/) {
-            #printf "Excluding calculated label '%s'\n", $_;
+            #printf "Excluding calculated label '%s' &%04X\n", $label, $_;
         }
         else {
             printf OFH "%-10s = &%04X  \\  %s\n", $label{$_}, $_, $likely_type{$_} // "";
-            #printf "%-10s = &%04X\n", $label{$_}, $_;
+            #printf "%-10s = &%04X  \\  %s\n", $label{$_}, $_, $likely_type{$_} // "";
         };
     };
     print OFH "\n";
@@ -736,7 +765,7 @@ if ($TABLE_FILE) {
         };
         print OFH ",\"likely type\"\n";
         foreach $ptr (sort {$a <=> $b} keys %hits_by_mode) {
-            printf OFH "\"%s\",\"&%04X\"", $label{$ptr}, $ptr;
+            printf OFH "\"%s\",\"&%04X\"", $label{$ptr} // "", $ptr;
             foreach $mode (@mode) {
                 printf OFH ",%s", $hits_by_mode{$ptr}{$mode} // "";
             };
