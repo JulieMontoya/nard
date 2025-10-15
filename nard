@@ -3,16 +3,16 @@
 #  NARD -- Not A Real Disassembler
 #  PD 2025 Julie Kirsty Louise Montoya
 
-#  Version 0.2.5  2025-10-12
+#  Version 0.2.6  2025-10-14
 
 #  -w parameter specifies comma-separated list of word variables
 #  (like -g)
 #  Following locations will be given calculated labels in asm output.
 
-#  Now generates table of hits on labels, which can be saved either as
-#  plain text or CSV spreadsheet  (auto-determined from filename)
-#  Also JSON disassembly file, which can be reconstructed elsewhere
-#  Bodgy way of doing calculated labels still works, for now.
+#  -f parameter forces safe long forms; wherever an instruction has an
+#  absolute address < &100 and could assemble to a short form, render
+#  it as EQUB statements.  If not used, warns with comment in asm
+#  output.
 
 use strict;
 use Getopt::Std;
@@ -24,7 +24,7 @@ use JSON;
 $| = TRUE;
 
 my %OPTIONS;
-getopts "A:J:La:de:g:i:j:l:o:t:vw:", \%OPTIONS;
+getopts "A:J:La:de:fg:i:j:l:o:t:vw:", \%OPTIONS;
 
 my $VERBOSE     = $OPTIONS{"v"};
 my $IN_FILE     = $OPTIONS{"i"};
@@ -42,6 +42,7 @@ my $NO_LABELS   = $OPTIONS{"L"};
 my $WORD_VARS   = $OPTIONS{"w"};
 my $JSD_FILE    = $OPTIONS{"J"};
 my $TABLE_FILE  = $OPTIONS{"t"};
+my $SAFE_LONG   = $OPTIONS{"f"};
 my $JSON = new JSON;
 
 my ($data, @gap, %gap, @mem, @chunk, $ptr, $first_free, $chunk_start, $mnemonic,
@@ -318,6 +319,7 @@ if ($json_obj->{"word_vars"}) {
     foreach (keys %{$json_obj->{"word_vars"}}) {
         s/(0x|&)(\S+)/hex $2/ei;
         $word_var{$_} = TRUE;
+        $likely_type{$_} = "word variable";
     };
 };
 
@@ -325,6 +327,7 @@ if ($WORD_VARS) {
     foreach (split /,/, $WORD_VARS) {
         s/(0x|&)(\S+)/hex $2/ei;
         $word_var{$_} = TRUE;
+        $likely_type{$_} = "word variable";
     };
     #print Dumper \%word_var;
 };
@@ -355,7 +358,7 @@ if ($DUMP) {
 
 ###############  IF WE'RE NOT DUMPING, WE MUST BE DISASSEMBLING  ###############
 
-my $done = HIT_EOF;
+my $done = FALSE;
 $ptr = $EXEC_ADDR;
 
 #  Input file consists of chunks of 0 or more bytes of not-code,
@@ -522,7 +525,7 @@ while ($ptr < $first_free) {
             if ($mnemonic =~ /RTS|RTI|JMP|BNE|BEQ|BPL|BMI|B[CV][CS]/i) {
                 printf "Code ends cleanly with %s, preceded by %d byte%s not-code.\n",
                     $mnemonic, $not_code_count, ($not_code_count == 1 ? "" : "s");
-                $done = CLEAN_END;
+                $done = TRUE;
             };            
         }
         else {  #  Not a valid instruction, or part of a gap
@@ -554,7 +557,7 @@ while ($ptr < $first_free) {
 
     #  Deal with the not-code section first
     
-    print "\@not_code = ", Dumper \@not_code;
+    #print "\@not_code = ", Dumper \@not_code;
     
     if (@not_code) {
         my $ptr = $chunk_start;
@@ -627,6 +630,12 @@ while ($ptr < $first_free) {
             print "$dis\n";
             push @dis, $dis;
         };
+        #printf "&%04X : %02X %02X %02X ", $ptr, $mem[$ptr], $mem[$ptr + 1], $mem[$ptr + 2];
+        #printf "more=%3d operand=%04X\n", $more, $operand;
+        if (!$SAFE_LONG && ($more == 2) && ($operand & 0xff00) == 0) {
+            push @dis, sprintf("\\  WARNING: MAY RE-ASSEMBLE INCORRECTLY, SHOULD BE &%02X %02X %02X", $mem[$ptr], $mem[$ptr + 1], $mem[$ptr + 2]);
+            printf "\\  WARNING: MAY RE-ASSEMBLE INCORRECTLY, SHOULD BE &%02X %02X %02X\n", $mem[$ptr], $mem[$ptr + 1], $mem[$ptr + 2];
+        };
         $dis = sprintf "    %3s", $mnemonic;
         if ($more) {
             if (($mode !~ /#/)      #  Not immediate; operand is an address
@@ -651,6 +660,10 @@ while ($ptr < $first_free) {
         else {
             $dis .= sprintf " %s", $pattern;
         };
+        if ($SAFE_LONG && ($more == 2) && ($operand & 0xff00) == 0) {
+            push @dis, sprintf("\\  Avoiding unsafe long form %3s &%04X", $mnemonic, $operand);
+            $dis = sprintf"    EQUS &%02X : EQUS &%02X : EQUS &%02X", $mem[$ptr], $mem[$ptr + 1], $mem[$ptr + 2];
+        };
         
         print "$dis\n";
         push @dis, $dis;
@@ -667,7 +680,7 @@ while ($ptr < $first_free) {
         %new_label = ();
     }
     else {
-            print "No new labels.\n"        unless $NO_LABELS;
+        print "No new labels.\n"        unless $NO_LABELS;
     };
     printf "Chunk finished &%04X . Not-code: %d Code: %d\n",
         $ptr, $not_code_count, $code_count;
